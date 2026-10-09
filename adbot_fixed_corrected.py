@@ -184,9 +184,12 @@ def resolve_stream(page_url):
                 f"ناموفق: {e}"
             )
 
-    raise RuntimeError(
+        raise RuntimeError(
         f"دریافت لینک صدا شکست خورد: {last}"
-   def resolve_with_fallback(song):
+    )
+
+
+def resolve_with_fallback(song):
     """اول منبع اصلی، سپس SoundCloud به عنوان جایگزین."""
 
     title = song.get("title") or "آهنگ نامشخص"
@@ -196,7 +199,7 @@ def resolve_stream(page_url):
         f"شروع آماده‌سازی آهنگ: "
         f"title={title} page={page}"
     )
-
+    
     # تلاش اول: همان منبعی که سرچ پیدا کرده
     try:
         logger.info("تلاش برای resolve منبع اصلی...")
