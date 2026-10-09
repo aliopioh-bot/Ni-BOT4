@@ -85,57 +85,164 @@ def search_song(query):
     """اول ساندکلود، بعد یوتیوب."""
     for prefix in ("scsearch", "ytsearch"):
         try:
+            logger.info(f"شروع سرچ با {prefix}: {query}")
             song = _search_one(query, prefix)
             if song:
-                logger.info(f"نتیجه سرچ از {prefix}: {song['page']}")
+                logger.info(
+                    f"نتیجه سرچ از {prefix}: "
+                    f"title={song.get('title')} page={song.get('page')}"
+                )
                 return song
         except Exception as e:
             logger.warning(f"سرچ با {prefix} ناموفق بود: {e}")
+
+    logger.warning(f"هیچ نتیجه‌ای برای {query} پیدا نشد.")
     return None
 
 
 def resolve_stream(page_url):
-    """لینک مستقیم صدا + هدرها (روی همین سرور مصرف می‌شه، پس قفل بودن IP مشکلی نیست)."""
+    """گرفتن لینک مستقیم صدا از YouTube یا SoundCloud."""
+    logger.info(f"شروع دریافت لینک مستقیم صدا: {page_url}")
+
     is_yt = "youtube.com" in page_url or "youtu.be" in page_url
-    variants = [None, ["android_vr"], ["tv"], ["ios"]] if is_yt else [None]
+
+    if is_yt:
+        variants = [
+            None,
+            ["android_vr"],
+            ["tv"],
+            ["ios"],
+        ]
+    else:
+        variants = [None]
+
     last = None
+
     for client in variants:
         try:
+            logger.info(
+                f"شروع resolve: "
+                f"{'default' if client is None else client}"
+            )
+
             opts = _ydl_base_opts()
-            opts["format"] = "bestaudio/best"
+
+            opts.update({
+                "format": "bestaudio/best",
+                "socket_timeout": 15,
+                "retries": 2,
+                "fragment_retries": 2,
+                "skip_unavailable_fragments": True,
+            })
+
             if client:
-                opts["extractor_args"] = {"youtube": {"player_client": client}}
+                opts["extractor_args"] = {
+                    "youtube": {
+                        "player_client": client
+                    }
+                }
+
             with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(page_url, download=False)
-            url = info.get("url") or (info.get("requested_formats") or [{}])[0].get("url")
+                info = ydl.extract_info(
+                    page_url,
+                    download=False
+                )
+
+            if not info:
+                raise RuntimeError("yt-dlp اطلاعاتی برنگرداند")
+
+            url = info.get("url")
+
             if not url:
-                raise RuntimeError("لینک صدا پیدا نشد")
-            headers = {k: v for k, v in (info.get("http_headers") or {}).items()
-                       if k.lower() != "accept-encoding"}
+                formats = info.get("requested_formats") or []
+                if formats:
+                    url = formats[0].get("url")
+
+            if not url:
+                raise RuntimeError("لینک مستقیم صدا پیدا نشد")
+
+            headers = {
+                k: v
+                for k, v in (info.get("http_headers") or {}).items()
+                if k.lower() != "accept-encoding"
+            }
+
+            logger.info(
+                f"resolve موفق شد: "
+                f"title={info.get('title')} "
+                f"protocol={info.get('protocol')} "
+                f"ext={info.get('ext')}"
+            )
+
             return url, headers
+
         except Exception as e:
             last = e
-            logger.warning(f"resolve ({client or 'default'}) ناموفق: {e}")
-    raise last
+            logger.warning(
+                f"resolve با "
+                f"{'default' if client is None else client} "
+                f"ناموفق: {e}"
+            )
 
-def resolve_with_fallback(song):
-    """پخش مستقیم؛ اگر منبع اصلی نشد، منبع جایگزین را امتحان می‌کند."""
+    raise RuntimeError(
+        f"دریافت لینک صدا شکست خورد: {last}"
+   def resolve_with_fallback(song):
+    """اول منبع اصلی، سپس SoundCloud به عنوان جایگزین."""
+
+    title = song.get("title") or "آهنگ نامشخص"
+    page = song.get("page")
+
+    logger.info(
+        f"شروع آماده‌سازی آهنگ: "
+        f"title={title} page={page}"
+    )
+
+    # تلاش اول: همان منبعی که سرچ پیدا کرده
     try:
-        return resolve_stream(song["page"])
+        logger.info("تلاش برای resolve منبع اصلی...")
+        result = resolve_stream(page)
+        logger.info("منبع اصلی با موفقیت resolve شد.")
+        return result
+
     except Exception as e:
-        logger.warning(f"منبع اصلی پخش نشد: {e}")
+        logger.warning(
+            f"منبع اصلی resolve نشد: {e}"
+        )
 
+    # تلاش دوم: SoundCloud
     try:
-        sc = _search_one(song["title"], "scsearch")
+        logger.info(
+            f"تلاش برای پیدا کردن نسخه SoundCloud: {title}"
+        )
+
+        sc = _search_one(title, "scsearch")
+
         if sc:
-            logger.info(f"تلاش پخش از ساندکلود: {sc['page']}")
-            return resolve_stream(sc["page"])
+            logger.info(
+                f"نسخه SoundCloud پیدا شد: "
+                f"{sc.get('page')}"
+            )
+
+            result = resolve_stream(sc["page"])
+
+            logger.info(
+                "نسخه SoundCloud با موفقیت resolve شد."
+            )
+
+            return result
+
+        logger.warning(
+            "برای این آهنگ نتیجه‌ای در SoundCloud پیدا نشد."
+        )
+
     except Exception as e:
-        logger.warning(f"ساندکلود هم ناموفق بود: {e}")
+        logger.warning(
+            f"SoundCloud هم ناموفق بود: {e}"
+        )
 
-    raise RuntimeError("هیچ منبع قابل پخشی برای این آهنگ پیدا نشد")
-    raise last
-
+    raise RuntimeError(
+        f"هیچ منبع قابل پخشی برای «{title}» پیدا نشد."
+    )
 
 def find_ffmpeg():
     exe = shutil.which("ffmpeg")
@@ -201,52 +308,161 @@ class RadioStation:
             await asyncio.sleep(max(0.0, nxt - loop.time()))
 
     async def play(self, source: str, headers=None, max_seconds=None) -> int:
-        """یک آهنگ رو تا آخرش توی استریم پخش می‌کنه. تعداد بایت‌های پخش‌شده رو برمی‌گردونه."""
-        cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "error", "-re"]
-        if source.startswith("http"):
-            cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
-            if headers:
-                cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
-        cmd += ["-i", source, "-vn", "-map_metadata", "-1", "-ac", "2", "-ar", "44100",
-                "-b:a", "128k", "-f", "mp3", "-write_xing", "0", "-id3v2_version", "0", "pipe:1"]
-        loop = asyncio.get_running_loop()
-        started = loop.time()
-        total = 0
-        self.playing = True
-        proc = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            self.proc = proc
-            while True:
-                data = await asyncio.wait_for(proc.stdout.read(self.CHUNK), timeout=30)
-                if not data:
-                    break
-                total += len(data)
-                self.broadcast(data)
-                if max_seconds and loop.time() - started > max_seconds:
-                    break
-        finally:
-            # حتی اگر اجرای FFmpeg از همان ابتدا شکست بخورد، وضعیت رادیو گیر نمی‌کند.
-            if proc is not None:
-                if proc.returncode is None:
-                    try:
-                        proc.kill()
-                    except ProcessLookupError:
-                        pass
+    """پخش صدا با FFmpeg و ارسال MP3 به رادیو."""
+
+    if not source:
+        raise RuntimeError("لینک صدا خالی است")
+
+    logger.info(
+        f"شروع FFmpeg برای پخش آهنگ | "
+        f"source={source[:180]}"
+    )
+
+    cmd = [
+        self.ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-re",
+    ]
+
+    if source.startswith("http"):
+        cmd += [
+            "-reconnect", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "5",
+        ]
+
+        if headers:
+            header_text = "".join(
+                f"{k}: {v}\r\n"
+                for k, v in headers.items()
+            )
+            cmd += ["-headers", header_text]
+
+    cmd += [
+        "-i", source,
+        "-vn",
+        "-map_metadata", "-1",
+        "-ac", "2",
+        "-ar", "44100",
+        "-b:a", "128k",
+        "-f", "mp3",
+        "-write_xing", "0",
+        "-id3v2_version", "0",
+        "pipe:1",
+    ]
+
+    logger.info(
+        f"دستور FFmpeg آماده شد. "
+        f"تعداد آرگومان‌ها: {len(cmd)}"
+    )
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    total = 0
+    proc = None
+
+    self.playing = True
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        self.proc = proc
+
+        logger.info(
+            f"FFmpeg شروع شد. pid={proc.pid}"
+        )
+
+        last_log = loop.time()
+
+        while True:
+            data = await asyncio.wait_for(
+                proc.stdout.read(self.CHUNK),
+                timeout=30
+            )
+
+            if not data:
+                logger.warning(
+                    "FFmpeg دیگر خروجی صدا ندارد."
+                )
+                break
+
+            total += len(data)
+            self.broadcast(data)
+
+            # هر حدود 10 ثانیه یک گزارش
+            if loop.time() - last_log >= 10:
+                logger.info(
+                    f"رادیو در حال پخش است: "
+                    f"{total} bytes"
+                )
+                last_log = loop.time()
+
+            if (
+                max_seconds
+                and loop.time() - started > max_seconds
+            ):
+                logger.info(
+                    "حداکثر زمان آهنگ تمام شد."
+                )
+                break
+
+        logger.info(
+            f"پخش FFmpeg تمام شد. "
+            f"total={total} bytes"
+        )
+
+    except asyncio.TimeoutError:
+        logger.error(
+            "FFmpeg به مدت 30 ثانیه هیچ داده صوتی نداد."
+        )
+        raise RuntimeError(
+            "FFmpeg از منبع صدا داده دریافت نکرد."
+        )
+
+    finally:
+        if proc is not None:
+
+            if proc.returncode is None:
                 try:
-                    err = await asyncio.wait_for(proc.stderr.read(), timeout=2)
-                    if err:
-                        logger.warning(f"ffmpeg: {err.decode(errors='ignore')[:300]}")
-                except Exception:
+                    proc.kill()
+                except ProcessLookupError:
                     pass
-                try:
-                    await proc.wait()
-                except Exception:
-                    pass
-            self.proc = None
-            self.playing = False
-        return total
+
+            try:
+                err = await asyncio.wait_for(
+                    proc.stderr.read(),
+                    timeout=3
+                )
+
+                if err:
+                    logger.warning(
+                        f"FFmpeg stderr: "
+                        f"{err.decode(errors='ignore')[:1000]}"
+                    )
+
+            except Exception:
+                pass
+
+            try:
+                await proc.wait()
+            except Exception:
+                pass
+
+        self.proc = None
+        self.playing = False
+
+        logger.info(
+            f"وضعیت رادیو آزاد شد. "
+            f"total={total} bytes"
+        )
+
+    return total
 
     def skip(self):
         if self.proc and self.proc.returncode is None:
@@ -1850,28 +2066,59 @@ class AdvancedBot(BaseBot):
                 song = self.music_queue.pop(0)
                 self.now_playing = song
                 try:
-                    stream, hdrs = await asyncio.to_thread(resolve_with_fallback, song)
-                    await self.highrise.chat(
-                        f"▶️ در حال پخش: {song['title']}\n"
-                        f"👤 درخواست از: @{song['requester']}"
-                    )
-                    limit = (song["duration"] or 900) + 30
-                    sent = await RADIO.play(stream, hdrs, max_seconds=limit)
-                    if sent < 20000:
-                        raise RuntimeError("صدایی دریافت نشد")
-                except CancelledError:
-                    raise
-                except Exception as e:
-                    logger.error(f"خطا در پخش آهنگ: {e}")
-                    reason = " ".join(str(e).split())[:110]
-                    await self.highrise.chat(
-                        f"❌ مشکلی در پخش آهنگ @{song['requester']} پیش اومد، رد شد.\n"
-                        f"سبب: {reason}"
-                    )
-                finally:
-                    self.now_playing = None
-        except CancelledError:
-            logger.info("حلقه پخش موزیک لغو شد.")
+    stream, hdrs = await asyncio.to_thread(
+        resolve_with_fallback,
+        song
+    )
+
+    logger.info(
+        f"لینک صدا با موفقیت آماده شد برای: "
+        f"{song['title']}"
+    )
+
+    await self.highrise.chat(
+        f"▶️ در حال پخش: {song['title']}\n"
+        f"👤 درخواست از: @{song['requester']}"
+    )
+
+    limit = (song["duration"] or 900) + 30
+
+    sent = await RADIO.play(
+        stream,
+        hdrs,
+        max_seconds=limit
+    )
+
+    logger.info(
+        f"پخش آهنگ تمام شد: "
+        f"{song['title']} | "
+        f"bytes={sent}"
+    )
+
+    if sent < 20000:
+        raise RuntimeError("صدایی دریافت نشد")
+
+except CancelledError:
+    raise
+
+except Exception as e:
+    logger.error(
+        f"خطا در پخش آهنگ: {e}",
+        exc_info=True
+    )
+
+    reason = " ".join(str(e).split())[:110]
+
+    await self.highrise.chat(
+        f"❌ مشکلی در پخش آهنگ @{song['requester']} پیش اومد، رد شد.\n"
+        f"سبب: {reason}"
+    )
+
+finally:
+    self.now_playing = None
+
+except CancelledError:
+    logger.info("حلقه پخش موزیک لغو شد.")
 
     def music_queue_text(self) -> str:
         if not self.now_playing and not self.music_queue:
