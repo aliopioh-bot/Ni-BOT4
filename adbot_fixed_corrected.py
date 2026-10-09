@@ -82,11 +82,12 @@ def _search_one(query, prefix):
 
 
 def search_song(query):
-    """اول یوتیوب، اگه نشد ساندکلود (روی سرورها معمولاً کمتر بلاک می‌شه)."""
-    for prefix in ("ytsearch", "scsearch"):
+    """اول ساندکلود، بعد یوتیوب."""
+    for prefix in ("scsearch", "ytsearch"):
         try:
             song = _search_one(query, prefix)
             if song:
+                logger.info(f"نتیجه سرچ از {prefix}: {song['page']}")
                 return song
         except Exception as e:
             logger.warning(f"سرچ با {prefix} ناموفق بود: {e}")
@@ -117,20 +118,22 @@ def resolve_stream(page_url):
             logger.warning(f"resolve ({client or 'default'}) ناموفق: {e}")
     raise last
 
-
 def resolve_with_fallback(song):
-    """اول لینک خود آهنگ؛ اگه نشد همون آهنگ رو از ساندکلود پیدا و پخش می‌کنیم."""
+    """پخش مستقیم؛ اگر منبع اصلی نشد، منبع جایگزین را امتحان می‌کند."""
     try:
         return resolve_stream(song["page"])
     except Exception as e:
-        last = e
+        logger.warning(f"منبع اصلی پخش نشد: {e}")
+
     try:
         sc = _search_one(song["title"], "scsearch")
         if sc:
-            logger.info(f"پخش از ساندکلود: {sc['page']}")
+            logger.info(f"تلاش پخش از ساندکلود: {sc['page']}")
             return resolve_stream(sc["page"])
     except Exception as e:
-        logger.warning(f"fallback ساندکلود هم ناموفق: {e}")
+        logger.warning(f"ساندکلود هم ناموفق بود: {e}")
+
+    raise RuntimeError("هیچ منبع قابل پخشی برای این آهنگ پیدا نشد")
     raise last
 
 
